@@ -206,15 +206,3 @@ PRs welcome. Suggested workflow:
    Please document breaking changes if you introduce them.
 
 ---
-
-## License
-
-Suggested: **MIT** for maximum adoption. Example header:
-
-```
-MIT © m2hcz
-```
-
----
-
-If you want, I’ll produce a ready-to-drop `README.md` file, add badges (CI, license), or generate a `tests/` directory with sample scripts — I can even mock a small demo project that shows property binding and undo/redo in action. No assembly required; just plug and play.
