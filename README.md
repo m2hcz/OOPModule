@@ -1,208 +1,323 @@
 # AdvancedClassModule++
 
-**Advanced OOP utilities for Luau** — a compact, battle-tested class system for Roblox/Luau projects: properties, events, binding, scheduling, snapshot/undo, serialization, mixins, plugins and more.
+Advanced OOP utilities for Roblox Luau: classes, inheritance, typed-style managed properties, computed values, events, observers, bindings, scheduling, child ownership, logging, serialization, snapshots, undo/redo, mixins, plugins, interfaces, abstract classes, and sealed classes.
 
----
+This repository contains a single drop-in ModuleScript:
 
-## Table of contents
+```text
+module.lua
+```
 
-* [Overview](#overview)
-* [Key features](#key-features)
-* [Installation](#installation)
-* [Quick examples](#quick-examples)
-* [API summary](#api-summary)
-* [Best practices & notes](#best-practices--notes)
-* [Testing](#testing)
-* [Contributing](#contributing)
-* [License](#license)
+## Status
 
----
+Updated on 2026-04-26 with a safer and more consistent runtime core.
 
-## Overview
+Highlights in this version:
 
-`AdvancedClassModule++` provides a rich object system for Luau with first-class support for:
-
-* properties (default, lazy, readonly, computed),
-* event system (priorities, safe listeners),
-* observers & bindings (1-way / 2-way),
-* job scheduling (defer, delay, interval, debounce, throttle),
-* snapshot / undo / redo history,
-* JSON serialization and deserialization,
-* mixins, plugins and lifecycle hooks.
-
-Designed to be safe (listener errors don’t kill the emitter), practical for games and libraries, and easy to extend.
-
----
-
-## Key features
-
-* Create and extend classes (`extend`, `extendWith`)
-* Rich properties (`defineProperty`, `defineComputed`)
-* Events: `on`, `once`, `emit`, `emitAsync` with connection handles
-* Binding: `bindProperty`, `bindTo`, `linkTwoWay`
-* Scheduling: `defer`, `delay`, `interval`, `debounce`, `throttle`
-* Snapshot/history: `snapshot`, `commit`, `undo`, `redo`
-* Serialize/deserialize: `serialize`, `toJSON`, `fromJSON`
-* Lifecycle: `onInit`, `postInit`, `preDestroy`, `onDestroy`
-* Children management, tags, logging utilities
-
----
+- Fixed subclass metadata inheritance so `extend()` no longer leaks or overwrites `className`, `super`, `__props`, `__static`, and related class internals.
+- Added internal public-value storage so managed properties keep validation, observers, computed invalidation, and `changed` events active after the first assignment.
+- Improved computed-property cache invalidation, including dependent computed chains.
+- Improved `serialize`, `deserialize`, `snapshot`, `undo`, and `redo` so readonly/computed runtime fields are handled safely.
+- Fixed `cancelAllJobs()` so cancellation cannot skip handles while mutating job buckets.
+- Improved `clone()` and `deepClone()` to rebuild runtime containers and assign fresh instance ids.
+- Added more defensive checks for callbacks, logger assignment, children, and `waitForAny`.
 
 ## Installation
 
-Copy the module file into your project (e.g. `ReplicatedStorage` or `ServerScriptService`) and require it:
+Copy `module.lua` into your Roblox project as a ModuleScript, commonly in `ReplicatedStorage` or `ServerScriptService`.
 
 ```lua
-local AdvancedClass = require(path.to.AdvancedClass) -- adjust path
+local AdvancedClass = require(path.to.module)
 ```
 
----
-
-## Quick examples
-
-### Simple class
+Example from `ReplicatedStorage`:
 
 ```lua
-local AdvancedClass = require(...) -- require the module
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local AdvancedClass = require(ReplicatedStorage.AdvancedClass)
+```
 
-local Person = AdvancedClass:extend("Person")
+## Quick Start
 
-function Person:constructor(name, age)
-    self.name = name or "Anon"
-    self.age = age or 0
+```lua
+local AdvancedClass = require(path.to.module)
+
+local PlayerState = AdvancedClass:extend("PlayerState")
+
+PlayerState:defineProperty("health", {
+	default = 100,
+	coerce = function(_, value)
+		return math.clamp(value, 0, 100)
+	end,
+	validate = function(_, value)
+		return type(value) == "number", "health must be a number"
+	end,
+})
+
+PlayerState:defineComputed("isAlive", { "health" }, function(self)
+	return self.health > 0
+end)
+
+function PlayerState:constructor(player)
+	self.player = player
 end
 
-local p = Person("Cristyan", 27)
-print(p.name, p.age) --> Cristyan 27
+local state = PlayerState.new(game.Players.LocalPlayer)
+
+state:on("changed:health", function(_, newValue, oldValue)
+	print("Health changed", oldValue, "->", newValue)
+end)
+
+state.health = 75
+print(state.isAlive) -- true
 ```
 
-### Properties and computed values
+## Properties
+
+Use `defineProperty` for values that need defaults, validation, coercion, serialization control, lazy loading, or custom getters/setters.
 
 ```lua
-local Player = AdvancedClass:extend("Player")
-Player:defineProperty("hp", { default = 100 })
-Player:defineComputed("isAlive", {"hp"}, function(self) return self.hp > 0 end)
+local Profile = AdvancedClass:extend("Profile")
 
-local pl = Player()
-print(pl.hp)      --> 100
-print(pl.isAlive) --> true
-pl.hp = 0
-print(pl.isAlive) --> false
+Profile:defineProperty("displayName", {
+	default = "Player",
+	coerce = function(_, value)
+		return tostring(value)
+	end,
+	validate = function(_, value)
+		return #value > 0, "displayName cannot be empty"
+	end,
+	serializable = true,
+})
 ```
 
-### Events
+Descriptor fields:
+
+- `default`: static default value or factory function.
+- `lazy`: function evaluated on first read.
+- `get`: custom getter.
+- `set`: custom setter.
+- `readonly`: prevents direct assignment.
+- `coerce`: normalizes incoming values before validation.
+- `validate`: returns `true` or `false, reason`.
+- `compute`: computed value function.
+- `dependsOn`: dependency list for computed invalidation.
+- `cache`: set to `false` to recompute on every read.
+- `serializable`: set to `false` to exclude from snapshots/serialization.
+
+## Computed Values
+
+```lua
+local CharacterStats = AdvancedClass:extend("CharacterStats")
+
+CharacterStats:defineProperty("strength", { default = 10 })
+CharacterStats:defineProperty("weaponPower", { default = 5 })
+
+CharacterStats:defineComputed("attackPower", { "strength", "weaponPower" }, function(self)
+	return self.strength + self.weaponPower
+end)
+
+local stats = CharacterStats()
+print(stats.attackPower) -- 15
+stats.strength = 20
+print(stats.attackPower) -- 25
+```
+
+Computed values are readonly. By default they are cached and invalidated when dependencies change.
+
+## Events
 
 ```lua
 local Emitter = AdvancedClass:extend("Emitter")
-Emitter:addEvent("hit")
-
 local obj = Emitter()
+
 local conn = obj:on("hit", function(self, damage)
-    print(self:toString() .. " took", damage)
+	print(self:toString(), "took", damage)
 end)
 
 obj:emit("hit", 25)
 conn:Disconnect()
 ```
 
-### Two-way binding
+Supported event helpers:
+
+- `addEvent(name)`
+- `on(name, callback, priority?)`
+- `once(name, callback, priority?)`
+- `onceWithTimeout(name, timeout, callback)`
+- `off(name, callback)`
+- `offAll(name?)`
+- `emit(name, ...)`
+- `emitAsync(name, ...)`
+- `waitFor(name)`
+- `waitForWithTimeout(name, timeout)`
+- `waitForAny({ names })`
+
+Listeners are called through guarded execution so one listener error does not stop the emitter.
+
+## Observers and Binding
 
 ```lua
-local A = AdvancedClass:extend("A")
-A:defineProperty("value", { default = 0 })
+local Settings = AdvancedClass:extend("Settings")
+Settings:defineProperty("volume", { default = 50 })
 
-local a = A()
-local b = A()
-local unlink = a:linkTwoWay(b, "value", "value")
+local settings = Settings()
 
-a.value = 42
-print(b.value) -- 42
+local unwatch = settings:watch({ "volume" }, function(prop, newValue, oldValue)
+	print(prop, oldValue, newValue)
+end)
 
-unlink()
+settings.volume = 80
+unwatch()
 ```
 
-### Snapshot / undo / redo
+Binding helpers:
+
+- `bindProperty(propertyName, callback)`
+- `unbindProperty(propertyName, callback)`
+- `watch(props, callback)`
+- `watchAll(predicate?, callback)`
+- `bindTo(target, targetProp, sourceProp?)`
+- `linkTwoWay(other, propA, propB)`
+
+## Scheduling
+
+```lua
+local obj = AdvancedClass()
+
+local delayHandle = obj:delay(2, function()
+	print("runs later unless cancelled or destroyed")
+end)
+
+delayHandle.cancel()
+```
+
+Scheduling helpers:
+
+- `defer(callback)`
+- `delay(seconds, callback)`
+- `interval(seconds, callback)`
+- `debounce(fn, ms)`
+- `throttle(fn, ms)`
+- `cancelAllJobs()`
+
+All scheduled work is tied to the instance and cancelled by `destroy()`.
+
+## Lifecycle
+
+Classes can define lifecycle hooks:
+
+```lua
+function MyClass:onInit()
+end
+
+function MyClass:constructor(...)
+end
+
+function MyClass:postInit()
+end
+
+function MyClass:preDestroy()
+end
+
+function MyClass:onDestroy()
+end
+```
+
+Call `instance:destroy()` to emit destroy events, destroy children, cancel jobs, disconnect listeners, and clear runtime containers.
+
+## Serialization and History
 
 ```lua
 local Doc = AdvancedClass:extend("Doc")
 Doc:defineProperty("text", { default = "" })
 
-local d = Doc()
-d.text = "v1"; d:commit()
-d.text = "v2"; d:commit()
+local doc = Doc()
+doc.text = "v1"
+doc:commit()
 
-d:undo()  -- returns to "v1"
-d:redo()  -- returns to "v2"
+doc.text = "v2"
+doc:commit()
+
+doc:undo()
+print(doc.text) -- v1
+
+local snapshot = doc:serialize()
+doc:deserialize(snapshot)
 ```
 
-### Serialize / deserialize
+Available helpers:
 
-```lua
-local obj = Person("Alice", 30)
-local json = obj:toJSON()
+- `serialize()`
+- `deserialize(data)`
+- `toJSON()`
+- `fromJSON(json)`
+- `snapshot()`
+- `diff(other)`
+- `commit()`
+- `undo()`
+- `redo()`
+- `clearHistory()`
 
-local newObj = Person()
-newObj:fromJSON(json)
-print(newObj.name, newObj.age)
-```
+Serialization skips runtime internals, private `_` fields, functions, threads, userdata, unsafe values, and recursive table loops. JSON helpers require Roblox `HttpService`.
 
----
+## Class Utilities
 
-## API summary
+- `extend(name)`
+- `extendWith(name, spec)`
+- `mixin(table)`
+- `use(plugin)`
+- `seal()`
+- `isSealed()`
+- `abstract()`
+- `isAbstract()`
+- `requireMethods(methods)`
+- `registerInterface(name, shape)`
+- `implements(interfaces)`
+- `static(name, value)`
+- `getStatic(name)`
+- `isA(class)`
+- `superCall(methodName, ...)`
 
-*(Short reference — module includes more utilities; consult source for full signatures.)*
+## Instance Utilities
 
-### Class / static
+- `clone()`
+- `deepClone()`
+- `freeze()`
+- `isDestroyed()`
+- `ensureNotDestroyed()`
+- `addChild(child)`
+- `removeChild(child)`
+- `getChildren()`
+- `destroyChildren()`
+- `setLogger(logger?)`
+- `setLogLevel(level)`
+- `log(level, message)`
+- `logf(level, fmt, ...)`
+- `addTag(tag)`
+- `hasTag(tag)`
+- `removeTag(tag)`
+- `toString()`
 
-* `:extend(name)` — create subclass
-* `:extendWith(name, spec)` — extend with property/static spec
-* `:mixin(table)` — apply mixin
-* `:use(plugin)` — apply plugin
-* `:defineProperty(name, desc)` — define property
-* `:defineComputed(name, deps, compute)` — define computed property
+## Best Practices
 
-### Instance
-
-* `:destroy()`, `:isDestroyed()`
-* Events: `:addEvent(name)`, `:on(name, cb, priority)`, `:once(...)`, `:emit(...)`, `:emitAsync(...)`
-* Bindings: `:bindProperty(name, cb)`, `:unbindProperty(...)`, `:bindTo(target, prop)`, `:linkTwoWay(other, a, b)`
-* Scheduling: `:defer(fn)`, `:delay(t, fn)`, `:interval(t, fn)`, `:debounce(fn, ms)`, `:throttle(fn, ms)`
-* History: `:snapshot()`, `:commit()`, `:undo()`, `:redo()`
-* Serialization: `:serialize()`, `:toJSON()`, `:fromJSON(json)`
-* Children: `:addChild(child)`, `:removeChild(child)`, `:destroyChildren()`
-* Tags/logging: `:log(level, msg)`, `:addTag(tag)`, `:hasTag(tag)`
-
----
-
-## Best practices & notes
-
-* `default` values that are functions are invoked per-instance at `new` time — use this for table defaults.
-* `defineComputed` produces readonly derived properties (use regular properties for mutables).
-* `destroy()` cancels scheduled jobs and disconnects listeners; always call it for ephemeral objects.
-* Avoid serializing functions — the serializer skips them by design.
-* `waitFor`-style utilities use coroutines; call from an appropriate coroutine context.
-
----
+- Use `default = function() return {} end` for table defaults that should be unique per instance.
+- Use `defineComputed` for derived readonly values and regular properties for mutable state.
+- Call `destroy()` for temporary objects so listeners and scheduled jobs are released.
+- Prefer `serializable = false` for runtime-only public properties.
+- Use `commit()` before state changes you want to undo later.
 
 ## Testing
 
-Create small test scripts that exercise:
+There is no bundled test runner yet. Recommended smoke checks:
 
-* property defaults and computed updates
-* event emission and listener error handling
-* two-way binding and unlink behavior
-* snapshot/commit/undo/redo flows
-  If you want, I can generate a basic `tests/` folder with runnable Luau/RBXScript cases.
+- Property defaults, validation, coercion, and observer notifications.
+- Computed properties updating after dependency changes.
+- Event priority, `once`, disconnect, and listener error isolation.
+- `delay`, `interval`, `debounce`, `throttle`, and `cancelAllJobs`.
+- `serialize`, `deserialize`, `commit`, `undo`, and `redo`.
+- `clone` and `deepClone` producing fresh ids and empty runtime containers.
 
----
+## License
 
-## Contributing
-
-PRs welcome. Suggested workflow:
-
-1. Open an issue describing the feature/bug.
-2. Create a clear branch (`fix/logging`, `feat/computed-cache`).
-3. Include tests or example scripts demonstrating behavior.
-   Please document breaking changes if you introduce them.
-
----
+Add your preferred license file if this repository is intended for public reuse.
