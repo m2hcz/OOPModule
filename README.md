@@ -317,7 +317,3 @@ There is no bundled test runner yet. Recommended smoke checks:
 - `delay`, `interval`, `debounce`, `throttle`, and `cancelAllJobs`.
 - `serialize`, `deserialize`, `commit`, `undo`, and `redo`.
 - `clone` and `deepClone` producing fresh ids and empty runtime containers.
-
-## License
-
-Add your preferred license file if this repository is intended for public reuse.
